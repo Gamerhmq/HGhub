@@ -11,7 +11,7 @@ jobs:
     name: Android ARM64 APK
     runs-on: ubuntu-latest
     env:
-      ANDROID_HOME: ${{ vars.ANDROID_HOME || '/usr/local/lib/android/sdk' }}
+      ANDROID_HOME: /usr/local/lib/android/sdk
       NDK_VERSION: 27.2.12479018
 
     steps:
@@ -35,12 +35,13 @@ jobs:
           node-version: '22'
           cache: pnpm
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install Android SDK and NDK
+        shell: bash
         run: |
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;${NDK_VERSION}"
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses
+          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;${NDK_VERSION}"
           echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
           echo "NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
