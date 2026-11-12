@@ -56,20 +56,83 @@ jobs:
       - name: Initialize Android project
         run: pnpm android:init
 
-      - name: Build Android ARM64 APK
+      - name: Build Android ARM64
         run: pnpm exec tauri android build --apk --target aarch64
 
       - name: Collect APK
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p artifacts
           find src-tauri/gen/android -type f -name "*.apk" -print -exec cp {} artifacts/ \;
           test -n "$(find artifacts -maxdepth 1 -type f -name '*.apk' -print -quit)"
 
-      - name: Upload APK
+      - name: Prepare signing key
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_BASE64" || {
+            echo "::error::Missing repository secret ANDROID_KEYSTORE_BASE64"
+            exit 1
+          }
+          mkdir -p "$RUNNER_TEMP/signing"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/signing/release.jks"
+          test -s "$RUNNER_TEMP/signing/release.jks"
+          echo "KEYSTORE_PATH=$RUNNER_TEMP/signing/release.jks" >> "$GITHUB_ENV"
+
+      - name: Align and sign APK
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+
+          test -n "$ANDROID_KEYSTORE_PASSWORD" || { echo "::error::Missing ANDROID_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$ANDROID_KEY_ALIAS" || { echo "::error::Missing ANDROID_KEY_ALIAS"; exit 1; }
+          test -n "$ANDROID_KEY_PASSWORD" || { echo "::error::Missing ANDROID_KEY_PASSWORD"; exit 1; }
+
+          shopt -s nullglob
+          apks=(artifacts/*.apk)
+          test "${#apks[@]}" -gt 0
+
+          for apk in "${apks[@]}"; do
+            base="$(basename "$apk" .apk)"
+            aligned="$RUNNER_TEMP/${base}-aligned.apk"
+            signed="artifacts/${base}-signed.apk"
+
+            "$BUILD_TOOLS/zipalign" -f -p 4 "$apk" "$aligned"
+
+            "$BUILD_TOOLS/apksigner" sign \
+              --ks "$KEYSTORE_PATH" \
+              --ks-key-alias "$ANDROID_KEY_ALIAS" \
+              --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+              --key-pass env:ANDROID_KEY_PASSWORD \
+              --out "$signed" \
+              "$aligned"
+
+            "$BUILD_TOOLS/zipalign" -c -p 4 "$aligned"
+            "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$signed"
+            rm -f "$aligned"
+          done
+
+          rm -f artifacts/*-unsigned.apk
+
+      - name: Clean signing materials
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/signing/release.jks"
+          rm -f "$RUNNER_TEMP"/*-aligned.apk
+
+      - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: HGhub-Android-ARM64
-          path: artifacts/*.apk
+          name: HGhub-Android-ARM64-Signed
+          path: artifacts/*-signed.apk
           if-no-files-found: error
           retention-days: 14
